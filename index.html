@@ -224,6 +224,23 @@
     .victory-card h2 { margin: 0 0 12px; font-family: "Press Start 2P", monospace; color: #fff6ad; font-size: clamp(18px, 3vw, 32px); }
     .victory-card p { margin: 0; color: var(--muted); font-size: 24px; }
 
+    .timer-bar {
+      width: 100%; height: 10px; background: #0e1030;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.5); z-index: 15;
+      border-radius: 2px; overflow: hidden; flex-basis: 100%;
+      transition: opacity 0.2s ease;
+    }
+    .timer-fill {
+      height: 100%; transition: width 1s linear, background 0.5s ease;
+      background: var(--accent); box-shadow: 0 0 8px var(--accent);
+    }
+    .timer-fill.warning { background: #ffb347; }
+    .timer-fill.danger { background: var(--danger); animation: timerPulse 0.5s steps(2, end) infinite; }
+    .timer-bar.hidden { opacity: 0; }
+    @keyframes timerPulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
     .game-over {
       position: absolute; top: 14px; right: 14px; font-family: "Press Start 2P", monospace; font-size: 10px;
       background: #61172c; color: #ffd3dd; padding: 10px; border: 4px solid var(--border);
@@ -319,7 +336,7 @@
         <div class="footer-note">Click a piece to add to answer zone; click answer to return. Complete rounds to earn knight items!</div>
       </section>
 
-      <section class="panel play-area">
+      <section class="panel play-area" style="position:relative;">
         <div id="gameOverBadge" class="game-over">GAME OVER</div>
         <div id="victoryBadge" class="game-over victory">VICTORY</div>
         <div id="particles" class="particles"></div>
@@ -346,7 +363,7 @@
           <div id="rewardSlots" class="reward-slots"></div>
         </div>
 
-        <div class="section"><p class="board-title">ANSWER ZONE</p><div id="answerZone" class="answer-zone"><div class="placeholder">Arrange pieces here in correct order</div></div></div>
+        <div class="section"><p class="board-title">ANSWER ZONE</p><div id="answerZone" class="answer-zone"><div id="timerBar" class="timer-bar hidden"><div id="timerFill" class="timer-fill"></div></div><div class="placeholder">Arrange pieces here in correct order</div></div></div>
         <div class="section"><p class="board-title">CARD POOL</p><div id="poolZone" class="pool-zone"></div></div>
       </section>
     </main>
@@ -374,6 +391,33 @@
         audio.play().catch(() => {});
       } catch(e) {}
     }
+    function playClickSFX() {
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const now = audioCtx.currentTime;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.frequency.value = 660;
+        osc.type = 'triangle';
+        gain.gain.setValueAtTime(0.25, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+        osc.start(now);
+        osc.stop(now + 0.08);
+        // Add a tiny tick layer
+        const osc2 = audioCtx.createOscillator();
+        const gain2 = audioCtx.createGain();
+        osc2.connect(gain2);
+        gain2.connect(audioCtx.destination);
+        osc2.frequency.value = 1100;
+        osc2.type = 'sine';
+        gain2.gain.setValueAtTime(0.12, now);
+        gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+        osc2.start(now);
+        osc2.stop(now + 0.05);
+      } catch(e) {}
+    }
 const KNIGHT_ITEMS = [
       { name: 'SWORD', color: '#ffe66d', file: SWORD_B64 },
       { name: 'ARMOR', color: '#6dc8ff', file: ARMOR_B64 },
@@ -392,6 +436,8 @@ const KNIGHT_ITEMS = [
     const overlayCard = document.getElementById('overlayCard');
     const particles = document.getElementById('particles');
     const gameOverBadge = document.getElementById('gameOverBadge');
+    let timerBar = document.getElementById('timerBar');
+    let timerFill = document.getElementById('timerFill');
     const victoryModal = document.getElementById('victoryModal');
     const victoryKnight = document.getElementById('victoryKnight');
     const comboHero = document.getElementById('comboHero');
@@ -406,6 +452,11 @@ const KNIGHT_ITEMS = [
     let combo = 0;
     let bestCombo = 0;
     let streak = 0;
+    // === TIMER state ===
+    const TIMER_SECONDS = 30;
+    let timerRemaining = TIMER_SECONDS;
+    let timerInterval = null;
+    let timerActive = false;
     // === NEW: collected knight items ===
     let collectedItems = []; // array of {name, color, file} — preserved across rounds unique items
 
@@ -550,6 +601,7 @@ const KNIGHT_ITEMS = [
     }
     
     function advanceToNextRound() {
+      stopTimer();
       document.querySelectorAll('.knight-appear').forEach(el => {
         el.style.opacity = '0';
         el.style.transform = 'scale(0.5)';
@@ -561,7 +613,9 @@ const KNIGHT_ITEMS = [
       sourceText.value = '';
       sourceText.focus();
       poolZone.innerHTML = '<div class="placeholder">Enter new text above & click Parse</div>';
-      answerZone.innerHTML = '<div class="placeholder">Arrange pieces here in correct order</div>';
+      answerZone.innerHTML = '<div id="timerBar" class="timer-bar hidden"><div id="timerFill" class="timer-fill"></div></div><div class="placeholder">Arrange pieces here in correct order</div>';
+      timerBar = document.getElementById('timerBar');
+      timerFill = document.getElementById('timerFill');
       updateScoreboard();
     }
 
@@ -656,6 +710,7 @@ const KNIGHT_ITEMS = [
       segments = parsed.length ? parsed : splitSentences(defaultText);
       segments.forEach(createStateForSegment);
       currentIndex = 0;
+      stopTimer();
       if (resetScoreboard) {
         score = 0; combo = 0; bestCombo = 0; streak = 0;
         // Don't reset collected items on parse
@@ -671,7 +726,9 @@ const KNIGHT_ITEMS = [
       const segment = getCurrentSegment();
       if (!segment) {
         poolZone.innerHTML = '<div class="placeholder">No cards available</div>';
-        answerZone.innerHTML = '<div class="placeholder">Arrange pieces here in correct order</div>';
+        answerZone.innerHTML = '<div id="timerBar" class="timer-bar hidden"><div id="timerFill" class="timer-fill"></div></div><div class="placeholder">Arrange pieces here in correct order</div>';
+        timerBar = document.getElementById('timerBar');
+        timerFill = document.getElementById('timerFill');
         return;
       }
       renderAnswerZone(segment);
@@ -680,7 +737,8 @@ const KNIGHT_ITEMS = [
 
     function renderAnswerZone(segment) {
       answerZone.classList.remove('success', 'error');
-      answerZone.innerHTML = '';
+      // Preserve timerBar — clear only piece elements
+      answerZone.querySelectorAll('.piece, .placeholder').forEach(el => el.remove());
       if (!segment.answer.length) {
         const ph = document.createElement('div'); ph.className = 'placeholder';
         ph.textContent = 'Arrange pieces here in correct order'; answerZone.appendChild(ph); return;
@@ -727,6 +785,7 @@ const KNIGHT_ITEMS = [
 
     function markCurrentSegmentCompleted(segment) {
       if (!segment.completed) {
+        stopTimer();
         segment.completed = true;
         combo += 1;
         streak += 1;
@@ -758,9 +817,48 @@ const KNIGHT_ITEMS = [
              segment.answer.every((item, idx) => item.text === segment.tokens[idx]);
     }
 
+    // ===== TIMER =====
+    function updateTimerDisplay() {
+      if (!timerBar || !timerFill) return;
+      const pct = Math.max(0, (timerRemaining / TIMER_SECONDS) * 100);
+      timerFill.style.width = pct + '%';
+      timerFill.className = 'timer-fill';
+      if (timerRemaining <= 5) timerFill.classList.add('danger');
+      else if (timerRemaining <= 10) timerFill.classList.add('warning');
+      timerBar.style.opacity = timerActive ? '1' : '0';
+    }
+    function startTimer() {
+      stopTimer();
+      timerRemaining = TIMER_SECONDS;
+      timerActive = true;
+      updateTimerDisplay();
+      if (timerBar) { timerBar.classList.remove('hidden'); timerBar.style.opacity = '1'; }
+      timerInterval = setInterval(function() {
+        timerRemaining--;
+        updateTimerDisplay();
+        if (timerRemaining <= 0) timeUp();
+      }, 1000);
+    }
+    function stopTimer() {
+      timerActive = false;
+      if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+      if (timerBar) timerBar.classList.add('hidden');
+    }
+    function timeUp() {
+      stopTimer();
+      combo = 0; streak = 0;
+      answerZone.classList.add('error');
+      markBodyFlash('error');
+      showOverlay("⏰ TIME'S UP!", 'wrong');
+      playSFX(SFX_WRONG);
+      showGameOverTemporary();
+      updateScoreboard();
+    }
+
     function movePiece(pieceId, fromAnswerZone, sourceNode) {
       const segment = getCurrentSegment();
       if (!segment) return;
+      playClickSFX();
       if (fromAnswerZone) {
         const idx = segment.answer.findIndex(p => p.id === pieceId);
         if (idx >= 0) { const [p] = segment.answer.splice(idx, 1); segment.pool.push(p); }
@@ -772,7 +870,6 @@ const KNIGHT_ITEMS = [
       const targetZone = fromAnswerZone ? poolZone : answerZone;
       const lastPiece = targetZone.querySelector('.piece[data-id="' + pieceId + '"]');
       animatePieceBounce(lastPiece);
-      if (isSegmentCorrect(segment)) markCurrentSegmentCompleted(segment);
     }
 
     function updateScoreboard() {
@@ -870,6 +967,7 @@ const KNIGHT_ITEMS = [
       if (correct) {
         if (!segment.completed) markCurrentSegmentCompleted(segment);
       } else {
+        stopTimer();
         combo = 0; streak = 0;
         answerZone.classList.add('error');
         markBodyFlash('error');
@@ -909,9 +1007,11 @@ const KNIGHT_ITEMS = [
       if (currentIndex === -1) currentIndex = Math.min(currentIndex + 1, segments.length - 1);
       renderCurrentSegment();
       hideGameOver();
+      startTimer();
     }
 
     function resetAll() {
+      stopTimer();
       sourceText.value = defaultText;
       score = 0; combo = 0; bestCombo = 0; streak = 0;
       collectedItems = []; // clear on full reset
